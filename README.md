@@ -1,92 +1,65 @@
 # ⚡ PromptCraft AI
 
-A RAG-powered prompt engineering assistant running entirely on your local machine with **Ollama**.
+**PromptCraft** is an intelligent, privacy-first prompt engineering assistant running entirely on your local machine using Ollama. Learn to write better prompts, explore built-in knowledge on best practices, and level up your AI interactions with professional tools.
 
-![Status](https://img.shields.io/badge/status-working-brightgreen) ![Local AI](https://img.shields.io/badge/AI-Ollama%20(Local)-blue) ![License](https://img.shields.io/badge/license-MIT-yellow)
+![PromptCraft Screenshot](https://raw.githubusercontent.com/abhishek/promptcraft/main/screenshot.png) *(Preview placeholder)*
 
-## Features
+---
 
-- 🧠 **RAG-Powered Responses** — Retrieves relevant prompt engineering knowledge using in-browser TF-IDF
-- 📚 **8 Built-in Topics** — Chain of Thought, Few-Shot, Role Prompting, Zero-Shot, Output Formatting, Prompt Chaining, Constraints & Clarity, System Prompts
-- 🏷️ **Source Tags** — Shows which knowledge topics were used for each response
-- 🎚️ **Topic Toggle Chips** — Focus the knowledge base on specific techniques
-- ⚡ **Quick Prompts** — Common prompt engineering questions in one click
-- 📝 **Custom Knowledge** — Add your own prompt engineering knowledge
-- 🧠 **Conversation Memory** — Maintains context across chat turns
-- 🔒 **100% Local** — No API keys, no cloud — everything runs on your machine
-- 🎨 **Premium Dark UI** — Glassmorphism design with smooth animations
+## ✨ Features
 
-## Quick Start
+- 🔒 **100% Local & Private**: Powered by Ollama. No API keys, no data leaves your machine.
+- 🧠 **Vector RAG Engine**: Instantly retrieves prompt engineering best practices (Chain of Thought, Few-Shot, structured outputs) to ground AI responses. Uses `nomic-embed-text` for semantic search with a TF-IDF fallback.
+- ⭐ **Prompt Rating Scorecard**: Generate a prompt and rate it on 5 dimensions (Role, Clarity, Constraints, Chain of Thought, Output Format) with visual progress bars and feedback.
+- 🔀 **Comparison Mode**: Generate 3 different variations of a prompt side by side to compare techniques.
+- 📂 **Templates Library**: Pre-built, customizable prompt templates for Coding, Research, Writing, Data Analysis, and more.
+- 📜 **Prompt History**: Automatically saves your generated prompts so you can easily copy or reuse them later.
+- 📥 **Export Options**: Export any prompt to Markdown (`.md`), JSON array (`.json`), or 1-click copy to clipboard.
+- 📚 **Custom Knowledge**: Add your own prompt engineering tips or company guidelines to the local RAG database.
+- 🌌 **Premium UI/UX**: Designed with a sleek glassmorphism aesthetic, smooth animations, and a responsive layout.
 
-### 1. Make sure Ollama is running
+## 🚀 Quick Start
 
+### 1. Install Dependencies
+Make sure you have [Ollama](https://ollama.ai) and [Node.js](https://nodejs.org/) installed.
+
+Pull the recommended models:
 ```bash
-ollama serve
+# Recommended text model
+ollama pull llama3
+
+# Required embedding model for accurate RAG retrieval
+ollama pull nomic-embed-text
 ```
 
-### 2. Pull a model (if you haven't already)
+### 2. Run the App
+Clone the repository and start the proxy server:
 
 ```bash
-ollama pull dolphin-mistral
-```
-
-### 3. Start the app
-
-```bash
-cd Prompt
+git clone https://github.com/yourusername/promptcraft.git
+cd promptcraft
+npm install # if using package-lock (none currently required)
 node server.js
 ```
 
-### 4. Open in Browser
+### 3. Open in Browser
+Visit `http://localhost:3000`
 
-Navigate to **http://localhost:3000** — select your model in ⚙️ Settings and start chatting!
+## 🛠️ Tech Stack
+- **Frontend**: HTML5, CSS3 (Custom Design System), Vanilla JavaScript (ES6 Modules)
+- **Backend/Proxy**: Node.js (`http` module, no heavy frameworks)
+- **AI Core**: Ollama API (`chat` and `embed` endpoints)
+- **RAG**: Custom In-Memory Vector Search (Cosine Similarity) with TF-IDF fallback.
 
-## Architecture
+## 💡 How to Use
+1. **Select a Model**: Go to Settings (⚙️) and pick your preferred Ollama model.
+2. **Ask for Help**: Type "How do I make the AI output JSON?" or use a Quick Prompt.
+3. **Compare**: Click the "🔀 Compare" toggle in the input area to see 3 variations of your next prompt.
+4. **Rate**: Click "⭐ Rate" on an assistant's response to see how good the generated prompt is.
+5. **Save**: Find all your past prompts in the sidebar History section.
 
-```
-Prompt/
-├── index.html              # HTML shell
-├── styles.css              # Design system (dark glassmorphism)
-├── server.js               # Proxy to Ollama (Node.js, zero deps)
-├── js/
-│   ├── knowledge-base.js   # 8 topics + custom knowledge CRUD
-│   ├── rag-engine.js       # TF-IDF retrieval engine
-│   ├── api.js              # Ollama API integration
-│   ├── ui.js               # DOM/event handling
-│   └── app.js              # Entry point
-└── README.md
-```
+## 🤝 Contributing
+Contributions are welcome! If you want to add new default Prompt Templates or Knowledge Base topics, simply edit `js/templates.js` or `js/knowledge-base.js`.
 
-### How RAG Works
-
-1. **User types a query** → The RAG engine tokenizes and scores it against all knowledge topics
-2. **TF-IDF retrieval** → Top 3 most relevant topics are selected using cosine similarity
-3. **Context injection** → Retrieved knowledge is injected into the model's system prompt
-4. **Response** → The local model generates a grounded response with source attribution
-
-## Adding Custom Knowledge
-
-1. Click **"+ Add Knowledge"** in the sidebar
-2. Enter a title, content (markdown supported), and optional tags
-3. The new topic appears as a chip and is included in retrieval
-4. Custom knowledge persists in `localStorage`
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | HTML, CSS, Vanilla JavaScript (ES Modules) |
-| AI | Ollama (local models — dolphin-mistral, llama3, etc.) |
-| RAG | In-browser TF-IDF with cosine similarity |
-| Storage | `localStorage` (custom knowledge, model selection, chat memory) |
-| Server | Node.js proxy to Ollama (zero dependencies) |
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-
-## License
-
-MIT
+## 📄 License
+MIT License. Free to use and modify.

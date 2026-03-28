@@ -108,6 +108,8 @@ const server = http.createServer((req, res) => {
   // Proxy routes to Ollama
   if (req.method === 'POST' && req.url === '/api/chat') {
     proxyToOllama(req, res, '/api/chat');
+  } else if (req.method === 'POST' && req.url === '/api/embed') {
+    proxyToOllama(req, res, '/api/embed');
   } else if (req.method === 'GET' && req.url === '/api/models') {
     proxyToOllama(req, res, '/api/tags');
   } else if (req.method === 'GET' && req.url === '/api/health') {
@@ -142,6 +144,7 @@ server.listen(PORT, () => {
   
   Proxy routes:
     POST /api/chat   → Ollama chat
+    POST /api/embed  → Ollama embeddings
     GET  /api/models → Ollama model list
     GET  /api/health → Ollama health check
   

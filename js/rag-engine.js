@@ -1,12 +1,70 @@
 // ============================================
 // RAG Engine Module
-// Lightweight TF-IDF retrieval for in-browser use
+// Vector Embeddings (Ollama nomic-embed-text) with TF-IDF fallback
 // ============================================
 
 import { getAllTopics } from './knowledge-base.js';
 
 // ============================================
-// Text Processing
+// Embedding Cache
+// ============================================
+
+const embeddingCache = new Map();
+
+/**
+ * Get an embedding vector from Ollama's nomic-embed-text model.
+ * @param {string} text
+ * @returns {Promise<Float64Array|null>}
+ */
+async function getEmbedding(text) {
+  // Check cache
+  const cacheKey = text.substring(0, 200); // use first 200 chars as key
+  if (embeddingCache.has(cacheKey)) {
+    return embeddingCache.get(cacheKey);
+  }
+
+  try {
+    const response = await fetch('/api/embed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'nomic-embed-text',
+        input: text
+      })
+    });
+
+    if (!response.ok) return null;
+    const data = await response.json();
+
+    // Ollama returns { embeddings: [[...]] } for single input
+    const embedding = data.embeddings?.[0] || data.embedding || null;
+    if (embedding) {
+      embeddingCache.set(cacheKey, embedding);
+    }
+    return embedding;
+  } catch (e) {
+    console.warn('Embedding request failed, using TF-IDF fallback:', e.message);
+    return null;
+  }
+}
+
+/**
+ * Cosine similarity for dense float vectors.
+ */
+function cosineSimilarityVec(vecA, vecB) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dot += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// ============================================
+// Text Processing (TF-IDF Fallback)
 // ============================================
 
 const STOP_WORDS = new Set([
@@ -40,7 +98,6 @@ function computeTF(tokens) {
   tokens.forEach(token => {
     tf[token] = (tf[token] || 0) + 1;
   });
-  // Normalize by document length
   const len = tokens.length || 1;
   Object.keys(tf).forEach(token => {
     tf[token] /= len;
@@ -60,7 +117,7 @@ function computeIDF(documents) {
   });
 
   Object.keys(idf).forEach(token => {
-    idf[token] = Math.log((N + 1) / (idf[token] + 1)) + 1; // smoothed IDF
+    idf[token] = Math.log((N + 1) / (idf[token] + 1)) + 1;
   });
 
   return idf;
@@ -85,19 +142,86 @@ function cosineSimilarity(vecA, vecB) {
 }
 
 // ============================================
-// RAG Retrieval
+// TF-IDF Retrieval (Fallback)
+// ============================================
+
+function retrieveTFIDF(query, topics, topK, minScore) {
+  if (topics.length === 0) return [];
+
+  const documents = topics.map(topic => {
+    const text = `${topic.title} ${topic.tags.join(' ')} ${topic.content}`;
+    const tokens = tokenize(text);
+    return { topic, tokens, tf: computeTF(tokens) };
+  });
+
+  const idf = computeIDF(documents);
+
+  documents.forEach(doc => {
+    doc.tfidf = {};
+    Object.keys(doc.tf).forEach(token => {
+      doc.tfidf[token] = doc.tf[token] * (idf[token] || 0);
+    });
+  });
+
+  const queryTokens = tokenize(query);
+  const queryTF = computeTF(queryTokens);
+  const queryTFIDF = {};
+  Object.keys(queryTF).forEach(token => {
+    queryTFIDF[token] = queryTF[token] * (idf[token] || 1);
+  });
+
+  const scored = documents.map(doc => ({
+    topic: doc.topic,
+    score: cosineSimilarity(queryTFIDF, doc.tfidf)
+  }));
+
+  return scored
+    .filter(s => s.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+}
+
+// ============================================
+// Embedding-based Retrieval
+// ============================================
+
+async function retrieveEmbeddings(query, topics, topK, minScore) {
+  // Get query embedding
+  const queryEmbedding = await getEmbedding(query);
+  if (!queryEmbedding) return null; // signal fallback
+
+  // Get embeddings for all topics
+  const results = [];
+  for (const topic of topics) {
+    const text = `${topic.title}: ${topic.tags.join(', ')}. ${topic.content.substring(0, 500)}`;
+    const topicEmbedding = await getEmbedding(text);
+    if (!topicEmbedding) continue;
+
+    const score = cosineSimilarityVec(queryEmbedding, topicEmbedding);
+    results.push({ topic, score });
+  }
+
+  return results
+    .filter(s => s.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+}
+
+// ============================================
+// RAG Retrieval (Public API)
 // ============================================
 
 /**
  * Retrieve the top-K most relevant topics for a given query.
+ * Uses vector embeddings when available, falls back to TF-IDF.
  * @param {string} query - The user's question or task
  * @param {Object} options
  * @param {number} options.topK - Number of results to return (default 3)
  * @param {Set<string>|null} options.enabledTopicIds - If set, only consider these topic IDs
  * @param {number} options.minScore - Minimum similarity score threshold (default 0.05)
- * @returns {Array<{topic: Object, score: number}>}
+ * @returns {Promise<Array<{topic: Object, score: number}>>}
  */
-export function retrieve(query, options = {}) {
+export async function retrieve(query, options = {}) {
   const { topK = 3, enabledTopicIds = null, minScore = 0.05 } = options;
 
   const allTopics = getAllTopics();
@@ -107,43 +231,20 @@ export function retrieve(query, options = {}) {
 
   if (topics.length === 0) return [];
 
-  // Prepare documents
-  const documents = topics.map(topic => {
-    const text = `${topic.title} ${topic.tags.join(' ')} ${topic.content}`;
-    const tokens = tokenize(text);
-    return { topic, tokens, tf: computeTF(tokens) };
-  });
+  // Try embedding-based retrieval first
+  try {
+    const embeddingResults = await retrieveEmbeddings(query, topics, topK, minScore);
+    if (embeddingResults && embeddingResults.length > 0) {
+      console.log('📡 Using vector embeddings for retrieval');
+      return embeddingResults;
+    }
+  } catch (e) {
+    console.warn('Embedding retrieval failed, falling back to TF-IDF:', e.message);
+  }
 
-  // Compute IDF across all documents
-  const idf = computeIDF(documents);
-
-  // Compute TF-IDF vectors for documents
-  documents.forEach(doc => {
-    doc.tfidf = {};
-    Object.keys(doc.tf).forEach(token => {
-      doc.tfidf[token] = doc.tf[token] * (idf[token] || 0);
-    });
-  });
-
-  // Compute query TF-IDF vector
-  const queryTokens = tokenize(query);
-  const queryTF = computeTF(queryTokens);
-  const queryTFIDF = {};
-  Object.keys(queryTF).forEach(token => {
-    queryTFIDF[token] = queryTF[token] * (idf[token] || 1);
-  });
-
-  // Score each document
-  const scored = documents.map(doc => ({
-    topic: doc.topic,
-    score: cosineSimilarity(queryTFIDF, doc.tfidf)
-  }));
-
-  // Sort by score descending, filter by min score, return top K
-  return scored
-    .filter(s => s.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+  // Fallback to TF-IDF
+  console.log('📊 Using TF-IDF fallback for retrieval');
+  return retrieveTFIDF(query, topics, topK, minScore);
 }
 
 /**

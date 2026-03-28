@@ -5,7 +5,9 @@
 
 import { getAllTopics, getBuiltInTopics, getCustomTopics, addCustomTopic, removeCustomTopic } from './knowledge-base.js';
 import { retrieve, buildContext, getSourceTags } from './rag-engine.js';
-import { sendMessage, loadConversationMemory, saveConversationMemory, clearConversationMemory, getModelInfo, getMessageCount, fetchAvailableModels, checkOllamaStatus, getSelectedModel, setSelectedModel } from './api.js';
+import { sendMessage, loadConversationMemory, saveConversationMemory, clearConversationMemory, getModelInfo, getMessageCount, fetchAvailableModels, checkOllamaStatus, getSelectedModel, setSelectedModel, ratePrompt, generateVariations } from './api.js';
+import { saveToHistory, getHistory, deleteHistoryItem, clearAllHistory, formatHistoryDate } from './prompt-history.js';
+import { TEMPLATES, getTemplateCategories, getTemplatesByCategory, extractFields, fillTemplate } from './templates.js';
 
 // ============================================
 // State
@@ -14,6 +16,8 @@ import { sendMessage, loadConversationMemory, saveConversationMemory, clearConve
 let enabledTopicIds = new Set(getAllTopics().map(t => t.id));
 let conversationHistory = loadConversationMemory();
 let isProcessing = false;
+let compareMode = false;
+let webSearchEnabled = false;
 
 // ============================================
 // DOM Helpers
@@ -112,10 +116,126 @@ function createMessageElement(role, content, sources = []) {
     bubble.appendChild(sourcesDiv);
   }
 
+  // Action buttons for assistant messages
+  if (role === 'assistant') {
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+
+    // Copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'action-btn';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> Copy';
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(content).then(() => {
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg> Copied!';
+        setTimeout(() => {
+          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg> Copy';
+        }, 2000);
+      });
+    });
+
+    // Download MD button
+    const mdBtn = document.createElement('button');
+    mdBtn.className = 'action-btn';
+    mdBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> .md';
+    mdBtn.addEventListener('click', () => downloadAsFile(content, 'prompt.md', 'text/markdown'));
+
+    // Download JSON button
+    const jsonBtn = document.createElement('button');
+    jsonBtn.className = 'action-btn';
+    jsonBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg> .json';
+    jsonBtn.addEventListener('click', () => {
+      const jsonData = JSON.stringify({ content, sources, timestamp: new Date().toISOString() }, null, 2);
+      downloadAsFile(jsonData, 'prompt.json', 'application/json');
+    });
+
+    // Rate button
+    const rateBtn = document.createElement('button');
+    rateBtn.className = 'action-btn action-btn-accent';
+    rateBtn.innerHTML = '⭐ Rate';
+    rateBtn.addEventListener('click', () => handleRatePrompt(content, bubble, rateBtn));
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(mdBtn);
+    actions.appendChild(jsonBtn);
+    actions.appendChild(rateBtn);
+    bubble.appendChild(actions);
+  }
+
   msg.appendChild(avatar);
   msg.appendChild(bubble);
 
   return msg;
+}
+
+function downloadAsFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`Downloaded ${filename}`, 'success');
+}
+
+async function handleRatePrompt(content, bubble, rateBtn) {
+  rateBtn.disabled = true;
+  rateBtn.innerHTML = '⏳ Rating...';
+
+  const { ratings, error } = await ratePrompt(content);
+
+  if (error) {
+    showToast(error, 'error');
+    rateBtn.disabled = false;
+    rateBtn.innerHTML = '⭐ Rate';
+    return;
+  }
+
+  // Remove existing rating card if any
+  const existingCard = bubble.querySelector('.prompt-rating-card');
+  if (existingCard) existingCard.remove();
+
+  const card = document.createElement('div');
+  card.className = 'prompt-rating-card';
+
+  const dimensions = [
+    { key: 'role', label: 'Role Definition', icon: '🎭' },
+    { key: 'clarity', label: 'Clarity', icon: '💡' },
+    { key: 'constraints', label: 'Constraints', icon: '📐' },
+    { key: 'chain_of_thought', label: 'Chain of Thought', icon: '🧠' },
+    { key: 'output_format', label: 'Output Format', icon: '📋' }
+  ];
+
+  const overall = ratings.overall || (
+    dimensions.reduce((sum, d) => sum + (ratings[d.key]?.score || 0), 0) / dimensions.length
+  ).toFixed(1);
+
+  let cardHTML = `<div class="rating-header"><span class="rating-overall-score">${overall}/5</span><span class="rating-overall-label">Overall Score</span></div>`;
+
+  dimensions.forEach(dim => {
+    const data = ratings[dim.key] || { score: 0, feedback: 'N/A' };
+    const pct = (data.score / 5) * 100;
+    cardHTML += `
+      <div class="rating-row">
+        <span class="rating-label">${dim.icon} ${dim.label}</span>
+        <div class="rating-bar"><div class="rating-fill" style="width:${pct}%" data-score="${data.score}"></div></div>
+        <span class="rating-score">${data.score}/5</span>
+      </div>
+      <div class="rating-feedback">${escapeHtml(data.feedback)}</div>`;
+  });
+
+  if (ratings.suggestion) {
+    cardHTML += `<div class="rating-suggestion">💡 <strong>Suggestion:</strong> ${escapeHtml(ratings.suggestion)}</div>`;
+  }
+
+  card.innerHTML = cardHTML;
+  bubble.appendChild(card);
+
+  rateBtn.innerHTML = '⭐ Rated';
+  rateBtn.disabled = true;
+
+  scrollToBottom();
 }
 
 function addTypingIndicator() {
@@ -163,6 +283,60 @@ function appendMessage(role, content, sources = []) {
     msg.classList.add('message-visible');
   });
 
+  scrollToBottom();
+}
+
+// ============================================
+// Comparison Mode Rendering
+// ============================================
+
+function appendComparisonResult(variations) {
+  const chatMessages = $('#chat-messages');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'message message-assistant';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar';
+  avatar.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble comparison-bubble';
+
+  const header = document.createElement('div');
+  header.className = 'comparison-header';
+  header.innerHTML = '<h4>🔀 Prompt Variations</h4><p>Same prompt, three different techniques:</p>';
+  bubble.appendChild(header);
+
+  const container = document.createElement('div');
+  container.className = 'comparison-container';
+
+  variations.forEach(v => {
+    const card = document.createElement('div');
+    card.className = 'comparison-card';
+    card.innerHTML = `
+      <div class="comparison-card-header">
+        <span>${v.icon} ${v.name}</span>
+        <button class="action-btn comparison-copy" title="Copy">📋</button>
+      </div>
+      <div class="comparison-card-body">${v.error ? `<p class="error">⚠️ ${escapeHtml(v.error)}</p>` : renderMarkdown(v.content)}</div>`;
+
+    const copyBtn = card.querySelector('.comparison-copy');
+    if (v.content && copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        navigator.clipboard.writeText(v.content);
+        showToast('Variation copied!', 'success');
+      });
+    }
+
+    container.appendChild(card);
+  });
+
+  bubble.appendChild(container);
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(bubble);
+  chatMessages.appendChild(wrapper);
+
+  requestAnimationFrame(() => wrapper.classList.add('message-visible'));
   scrollToBottom();
 }
 
@@ -274,12 +448,10 @@ function renderQuickPrompts() {
 // ============================================
 
 async function initSettings() {
-  // Model selector
   const modelSelect = $('#model-select');
   const refreshBtn = $('#refresh-models-btn');
   const savedModel = getSelectedModel();
 
-  // Load models
   await populateModelSelector();
 
   modelSelect.addEventListener('change', () => {
@@ -295,18 +467,13 @@ async function initSettings() {
     showToast('Models refreshed', 'info');
   });
 
-  // Check Ollama status
   await updateOllamaStatus();
-
-  // Model info in footer
   $('#model-name').textContent = savedModel;
 
-  // Settings toggle
   $('#settings-toggle').addEventListener('click', () => {
     $('#settings-panel').classList.toggle('open');
   });
 
-  // Close settings when clicking outside
   document.addEventListener('click', (e) => {
     const panel = $('#settings-panel');
     const toggle = $('#settings-toggle');
@@ -341,7 +508,6 @@ async function populateModelSelector() {
     modelSelect.appendChild(opt);
   });
 
-  // If saved model isn't in the list, select the first one
   if (!models.some(m => m.name === savedModel) && models.length > 0) {
     modelSelect.value = models[0].name;
     setSelectedModel(models[0].name);
@@ -422,6 +588,176 @@ function handleRemoveCustomTopic(topicId) {
 }
 
 // ============================================
+// Templates Modal
+// ============================================
+
+function initTemplatesModal() {
+  const openBtn = $('#templates-btn');
+  const modal = $('#templates-modal');
+  const closeBtn = $('#templates-modal-close');
+
+  if (!openBtn || !modal) return;
+
+  openBtn.addEventListener('click', () => {
+    modal.classList.add('open');
+    renderTemplatesContent('All');
+  });
+
+  closeBtn.addEventListener('click', () => modal.classList.remove('open'));
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) modal.classList.remove('open');
+  });
+}
+
+function renderTemplatesContent(activeCategory) {
+  const categoriesContainer = $('#template-categories');
+  const cardsContainer = $('#template-cards');
+  if (!categoriesContainer || !cardsContainer) return;
+
+  // Category tabs
+  const categories = ['All', ...getTemplateCategories()];
+  categoriesContainer.innerHTML = '';
+  categories.forEach(cat => {
+    const tab = document.createElement('button');
+    tab.className = `template-category-tab ${cat === activeCategory ? 'active' : ''}`;
+    tab.textContent = cat;
+    tab.addEventListener('click', () => renderTemplatesContent(cat));
+    categoriesContainer.appendChild(tab);
+  });
+
+  // Template cards
+  const templates = getTemplatesByCategory(activeCategory);
+  cardsContainer.innerHTML = '';
+  templates.forEach(tpl => {
+    const card = document.createElement('div');
+    card.className = 'template-card';
+    card.innerHTML = `
+      <div class="template-card-icon">${tpl.icon}</div>
+      <div class="template-card-info">
+        <h4>${escapeHtml(tpl.name)}</h4>
+        <p>${escapeHtml(tpl.description)}</p>
+        <span class="template-card-category">${tpl.category}</span>
+      </div>`;
+    card.addEventListener('click', () => showTemplateForm(tpl));
+    cardsContainer.appendChild(card);
+  });
+}
+
+function showTemplateForm(tpl) {
+  const cardsContainer = $('#template-cards');
+  const fields = extractFields(tpl.template);
+
+  cardsContainer.innerHTML = `
+    <div class="template-form">
+      <button class="template-back-btn" id="template-back">← Back to templates</button>
+      <h3>${tpl.icon} ${escapeHtml(tpl.name)}</h3>
+      <p class="template-form-desc">${escapeHtml(tpl.description)}</p>
+      <div class="template-fields" id="template-fields"></div>
+      <button class="btn btn-primary template-use-btn" id="template-use">Use This Prompt</button>
+    </div>`;
+
+  const fieldsContainer = $('#template-fields');
+  fields.forEach(field => {
+    const label = field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const group = document.createElement('div');
+    group.className = 'form-group';
+    group.innerHTML = `
+      <label class="form-label">${label}</label>
+      ${field === 'code' || field === 'data'
+        ? `<textarea class="form-textarea template-field-input" data-field="${field}" rows="4" placeholder="Enter ${label.toLowerCase()}..."></textarea>`
+        : `<input type="text" class="form-input template-field-input" data-field="${field}" placeholder="Enter ${label.toLowerCase()}...">`
+      }`;
+    fieldsContainer.appendChild(group);
+  });
+
+  $('#template-back').addEventListener('click', () => renderTemplatesContent('All'));
+  $('#template-use').addEventListener('click', () => {
+    const values = {};
+    $$('.template-field-input').forEach(input => {
+      values[input.dataset.field] = input.value;
+    });
+    const filled = fillTemplate(tpl.template, values);
+    const input = $('#message-input');
+    input.value = filled;
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+    updateSendButtonState();
+    $('#templates-modal').classList.remove('open');
+    input.focus();
+    showToast('Template loaded! Edit if needed, then send.', 'success');
+  });
+}
+
+// ============================================
+// Prompt History UI
+// ============================================
+
+function renderHistoryList() {
+  const container = $('#history-list');
+  if (!container) return;
+
+  const history = getHistory();
+  container.innerHTML = '';
+
+  if (history.length === 0) {
+    container.innerHTML = '<div class="history-empty">No prompts yet</div>';
+    return;
+  }
+
+  history.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'history-item';
+    div.innerHTML = `
+      <div class="history-item-header">
+        <span class="history-title" title="${escapeHtml(item.query)}">${escapeHtml(item.title)}</span>
+        <span class="history-date">${formatHistoryDate(item.timestamp)}</span>
+      </div>
+      <div class="history-actions">
+        <button class="history-copy-btn" title="Copy prompt">📋</button>
+        <button class="history-load-btn" title="Load into chat">↩️</button>
+        <button class="history-del-btn" title="Delete">🗑️</button>
+      </div>`;
+
+    div.querySelector('.history-copy-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(item.response);
+      showToast('Prompt copied!', 'success');
+    });
+
+    div.querySelector('.history-load-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const input = $('#message-input');
+      input.value = item.query;
+      input.focus();
+      updateSendButtonState();
+      showToast('Prompt loaded into input', 'info');
+    });
+
+    div.querySelector('.history-del-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteHistoryItem(item.id);
+      renderHistoryList();
+      showToast('Removed from history', 'info');
+    });
+
+    container.appendChild(div);
+  });
+}
+
+function initHistoryControls() {
+  const clearBtn = $('#clear-history-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      if (confirm('Clear all prompt history?')) {
+        clearAllHistory();
+        renderHistoryList();
+        showToast('History cleared', 'info');
+      }
+    });
+  }
+}
+
+// ============================================
 // Toast Notifications
 // ============================================
 
@@ -459,7 +795,6 @@ function handleClearMemory() {
     conversationHistory = [];
     clearConversationMemory();
     updateMemoryIndicator();
-    // Clear chat UI
     const chatMessages = $('#chat-messages');
     chatMessages.innerHTML = '';
     addWelcomeMessage();
@@ -506,11 +841,17 @@ I'm your prompt engineering assistant powered by **local AI via Ollama**. I can 
 - 🔗 Chain prompts for complex workflows
 - 🎭 Use role prompting for expert-level responses
 
+**New Features:**
+- ⭐ **Rate any prompt** on 5 dimensions (role, clarity, constraints, CoT, format)
+- 📂 **Templates** — pre-built prompt templates for common tasks
+- 🔀 **Compare mode** — generate 3 prompt variations side by side
+- 📜 **History** — revisit and reuse past prompts
+- 📥 **Export** — copy, download as .md or .json
+
 **Getting Started:**
 1. Make sure Ollama is running locally
 2. Select your preferred model in ⚙️ Settings
 3. Type a question or click a Quick Prompt below
-4. Toggle knowledge topics in the sidebar to focus my expertise
 
 **No API keys needed** — everything runs on your machine! 🔒`;
 
@@ -535,37 +876,56 @@ async function handleSendMessage() {
   // Show user message
   appendMessage('user', userMessage);
 
-  // Retrieve relevant knowledge
-  const results = retrieve(userMessage, {
-    topK: 3,
-    enabledTopicIds: enabledTopicIds.size > 0 ? enabledTopicIds : null
-  });
+  // Check if compare mode
+  if (compareMode) {
+    addTypingIndicator();
+    const variations = await generateVariations(userMessage);
+    removeTypingIndicator();
+    appendComparisonResult(variations);
 
-  const ragContext = buildContext(results);
-  const sourceTags = getSourceTags(results);
-
-  // Show typing indicator
-  addTypingIndicator();
-
-  // Send to API
-  const { content, error } = await sendMessage(userMessage, ragContext, conversationHistory);
-
-  removeTypingIndicator();
-
-  if (error) {
-    appendMessage('assistant', `⚠️ ${error}`, []);
-  } else {
-    appendMessage('assistant', content, sourceTags);
-
-    // Update conversation memory
     conversationHistory.push(
       { role: 'user', content: userMessage },
-      { role: 'assistant', content: content }
+      { role: 'assistant', content: `[Comparison of 3 variations generated]` }
     );
     saveConversationMemory(conversationHistory);
+    saveToHistory(userMessage, variations.map(v => `${v.icon} ${v.name}:\n${v.content}`).join('\n\n---\n\n'));
+  } else {
+    // Retrieve relevant knowledge (now async with embeddings)
+    const results = await retrieve(userMessage, {
+      topK: 3,
+      enabledTopicIds: enabledTopicIds.size > 0 ? enabledTopicIds : null
+    });
+
+    const ragContext = buildContext(results);
+    const sourceTags = getSourceTags(results);
+
+    // Show typing indicator
+    addTypingIndicator();
+
+    // Send to API
+    const { content, error } = await sendMessage(userMessage, ragContext, conversationHistory, { webSearchEnabled });
+
+    removeTypingIndicator();
+
+    if (error) {
+      appendMessage('assistant', `⚠️ ${error}`, []);
+    } else {
+      appendMessage('assistant', content, sourceTags);
+
+      // Update conversation memory
+      conversationHistory.push(
+        { role: 'user', content: userMessage },
+        { role: 'assistant', content: content }
+      );
+      saveConversationMemory(conversationHistory);
+
+      // Save to history
+      saveToHistory(userMessage, content);
+    }
   }
 
   updateMemoryIndicator();
+  renderHistoryList();
   isProcessing = false;
   updateSendButtonState();
 }
@@ -610,6 +970,26 @@ function initInputHandlers() {
   const deselectAll = $('#deselect-all-topics');
   if (selectAll) selectAll.addEventListener('click', selectAllTopics);
   if (deselectAll) deselectAll.addEventListener('click', deselectAllTopics);
+
+  // Compare mode toggle
+  const compareToggle = $('#compare-toggle');
+  if (compareToggle) {
+    compareToggle.addEventListener('click', () => {
+      compareMode = !compareMode;
+      compareToggle.classList.toggle('active', compareMode);
+      showToast(compareMode ? 'Compare mode ON — next prompt generates 3 variations' : 'Compare mode OFF', 'info');
+    });
+  }
+
+  // Web search toggle
+  const webSearchToggle = $('#web-search-toggle');
+  if (webSearchToggle) {
+    webSearchToggle.addEventListener('click', () => {
+      webSearchEnabled = !webSearchEnabled;
+      webSearchToggle.classList.toggle('active', webSearchEnabled);
+      showToast(webSearchEnabled ? 'Web search awareness ON' : 'Web search awareness OFF', 'info');
+    });
+  }
 }
 
 // ============================================
@@ -621,9 +1001,12 @@ export function initUI() {
   renderQuickPrompts();
   initSettings();
   initCustomKnowledgeModal();
+  initTemplatesModal();
   initInputHandlers();
   initSidebarToggle();
+  initHistoryControls();
   updateMemoryIndicator();
+  renderHistoryList();
 
   // Restore conversation history in UI
   if (conversationHistory.length > 0) {
